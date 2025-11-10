@@ -1,393 +1,386 @@
-;; Pipeline Integrity Monitor Contract
-;; Monitor pipeline conditions, detect corrosion, identify leaks, schedule inspections, and ensure regulatory compliance
+;; Pipeline Integrity Monitoring Smart Contract
+;; Manages pipeline inspections, corrosion monitoring, leak detection, and compliance
 
 ;; Constants
 (define-constant contract-owner tx-sender)
 (define-constant err-owner-only (err u100))
-(define-constant err-not-found (err u101))
-(define-constant err-unauthorized (err u102))
-(define-constant err-invalid-input (err u103))
-(define-constant err-already-exists (err u104))
-
-;; Pipeline status
-(define-constant status-operational u1)
-(define-constant status-maintenance u2)
-(define-constant status-failed u3)
-(define-constant status-decommissioned u4)
-
-;; Leak severity
-(define-constant severity-minor u1)
-(define-constant severity-moderate u2)
-(define-constant severity-major u3)
-(define-constant severity-critical u4)
+(define-constant err-not-authorized (err u101))
+(define-constant err-pipeline-exists (err u102))
+(define-constant err-pipeline-not-found (err u103))
+(define-constant err-invalid-data (err u104))
+(define-constant err-inspection-not-found (err u105))
+(define-constant err-leak-not-found (err u106))
 
 ;; Data Variables
-(define-data-var next-segment-id uint u1)
-(define-data-var next-inspection-id uint u1)
-(define-data-var next-leak-id uint u1)
-(define-data-var next-corrosion-id uint u1)
-(define-data-var total-segments uint u0)
-(define-data-var total-inspections uint u0)
-(define-data-var total-leaks uint u0)
+(define-data-var pipeline-counter uint u0)
+(define-data-var inspection-counter uint u0)
+(define-data-var corrosion-counter uint u0)
+(define-data-var leak-counter uint u0)
+(define-data-var schedule-counter uint u0)
 
 ;; Data Maps
-(define-map pipeline-segments
-  { segment-id: uint }
-  {
-    location: (string-ascii 200),
-    diameter: uint,
-    length: uint,
-    material: (string-ascii 50),
-    installation-date: uint,
-    operating-pressure: uint,
-    status: uint,
-    risk-score: uint,
-    last-inspection: uint,
-    operator: principal
-  }
+(define-map pipelines
+    uint
+    {
+        segment-id: (string-ascii 50),
+        location: (string-ascii 100),
+        diameter: uint,
+        material: (string-ascii 50),
+        installation-date: uint,
+        operator: principal,
+        status: (string-ascii 20),
+        last-inspection: uint
+    }
 )
 
 (define-map inspections
-  { inspection-id: uint }
-  {
-    segment-id: uint,
-    inspection-type: (string-ascii 100),
-    inspection-date: uint,
-    inspector: principal,
-    findings: (string-ascii 500),
-    compliance-status: bool,
-    next-inspection-due: uint,
-    defects-found: uint
-  }
+    uint
+    {
+        pipeline-id: uint,
+        inspector: principal,
+        inspection-date: uint,
+        findings: (string-ascii 200),
+        severity: (string-ascii 20),
+        compliance-status: bool,
+        next-inspection-due: uint
+    }
 )
 
-(define-map leak-reports
-  { leak-id: uint }
-  {
-    segment-id: uint,
-    detected-date: uint,
-    severity: uint,
-    location-details: (string-ascii 200),
-    estimated-volume: uint,
-    repair-status: bool,
-    repair-date: (optional uint),
-    reported-by: principal
-  }
+(define-map corrosion-records
+    uint
+    {
+        pipeline-id: uint,
+        measurement-date: uint,
+        measurement-type: (string-ascii 50),
+        corrosion-rate: uint,
+        severity: (string-ascii 20),
+        location-detail: (string-ascii 100),
+        corrective-action: (string-ascii 200)
+    }
 )
 
-(define-map corrosion-data
-  { corrosion-id: uint }
-  {
-    segment-id: uint,
-    survey-date: uint,
-    cathodic-protection-reading: int,
-    coating-condition: uint,
-    corrosion-rate: uint,
-    remediation-required: bool,
-    surveyor: principal
-  }
+(define-map leak-incidents
+    uint
+    {
+        pipeline-id: uint,
+        incident-date: uint,
+        severity: (string-ascii 20),
+        location-detail: (string-ascii 100),
+        volume-lost: uint,
+        response-action: (string-ascii 200),
+        resolved: bool,
+        resolution-date: uint
+    }
 )
 
-(define-map compliance-records
-  { segment-id: uint }
-  {
-    phmsa-compliant: bool,
-    last-audit-date: uint,
-    violations: uint,
-    next-audit-due: uint,
-    regulatory-status: (string-ascii 100)
-  }
+(define-map inspection-schedules
+    uint
+    {
+        pipeline-id: uint,
+        inspection-type: (string-ascii 50),
+        scheduled-date: uint,
+        regulatory-requirement: (string-ascii 100),
+        completed: bool,
+        completion-date: uint
+    }
 )
 
-;; Public Functions
+(define-map authorized-operators principal bool)
+(define-map authorized-inspectors principal bool)
 
-;; Register pipeline segment
-(define-public (register-pipeline-segment
-    (location (string-ascii 200))
+;; Authorization Functions
+(define-public (add-operator (operator principal))
+    (begin
+        (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+        (ok (map-set authorized-operators operator true))
+    )
+)
+
+(define-public (add-inspector (inspector principal))
+    (begin
+        (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+        (ok (map-set authorized-inspectors inspector true))
+    )
+)
+
+(define-public (remove-operator (operator principal))
+    (begin
+        (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+        (ok (map-delete authorized-operators operator))
+    )
+)
+
+(define-public (remove-inspector (inspector principal))
+    (begin
+        (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+        (ok (map-delete authorized-inspectors inspector))
+    )
+)
+
+;; Helper Functions
+(define-private (is-operator (caller principal))
+    (default-to false (map-get? authorized-operators caller))
+)
+
+(define-private (is-inspector (caller principal))
+    (default-to false (map-get? authorized-inspectors caller))
+)
+
+;; Pipeline Management Functions
+(define-public (register-pipeline 
+    (segment-id (string-ascii 50))
+    (location (string-ascii 100))
     (diameter uint)
-    (length uint)
     (material (string-ascii 50))
-    (operating-pressure uint))
-  (let
-    (
-      (segment-id (var-get next-segment-id))
+    (installation-date uint))
+    (let
+        (
+            (new-id (+ (var-get pipeline-counter) u1))
+        )
+        (asserts! (or (is-eq tx-sender contract-owner) (is-operator tx-sender)) err-not-authorized)
+        (asserts! (> diameter u0) err-invalid-data)
+        (var-set pipeline-counter new-id)
+        (ok (map-set pipelines new-id {
+            segment-id: segment-id,
+            location: location,
+            diameter: diameter,
+            material: material,
+            installation-date: installation-date,
+            operator: tx-sender,
+            status: "active",
+            last-inspection: u0
+        }))
     )
-    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
-    (asserts! (> diameter u0) err-invalid-input)
-    (asserts! (> length u0) err-invalid-input)
-    
-    (map-set pipeline-segments
-      { segment-id: segment-id }
-      {
-        location: location,
-        diameter: diameter,
-        length: length,
-        material: material,
-        installation-date: block-height,
-        operating-pressure: operating-pressure,
-        status: status-operational,
-        risk-score: u50,
-        last-inspection: block-height,
-        operator: tx-sender
-      }
-    )
-    
-    (map-set compliance-records
-      { segment-id: segment-id }
-      {
-        phmsa-compliant: true,
-        last-audit-date: block-height,
-        violations: u0,
-        next-audit-due: (+ block-height u52560),
-        regulatory-status: "compliant"
-      }
-    )
-    
-    (var-set next-segment-id (+ segment-id u1))
-    (var-set total-segments (+ (var-get total-segments) u1))
-    (ok segment-id)
-  )
 )
 
-;; Record inspection
-(define-public (record-inspection
-    (segment-id uint)
-    (inspection-type (string-ascii 100))
-    (findings (string-ascii 500))
+(define-public (update-pipeline-status (pipeline-id uint) (new-status (string-ascii 20)))
+    (let
+        (
+            (pipeline-data (unwrap! (map-get? pipelines pipeline-id) err-pipeline-not-found))
+        )
+        (asserts! (or (is-eq tx-sender contract-owner) 
+                     (is-eq tx-sender (get operator pipeline-data))) err-not-authorized)
+        (ok (map-set pipelines pipeline-id 
+            (merge pipeline-data { status: new-status })
+        ))
+    )
+)
+
+;; Inspection Functions
+(define-public (submit-inspection
+    (pipeline-id uint)
+    (findings (string-ascii 200))
+    (severity (string-ascii 20))
     (compliance-status bool)
-    (defects-found uint))
-  (let
-    (
-      (inspection-id (var-get next-inspection-id))
-      (segment (unwrap! (map-get? pipeline-segments { segment-id: segment-id }) err-not-found))
+    (next-inspection-due uint))
+    (let
+        (
+            (new-id (+ (var-get inspection-counter) u1))
+            (pipeline-data (unwrap! (map-get? pipelines pipeline-id) err-pipeline-not-found))
+        )
+        (asserts! (or (is-eq tx-sender contract-owner) (is-inspector tx-sender)) err-not-authorized)
+        (var-set inspection-counter new-id)
+        (map-set pipelines pipeline-id 
+            (merge pipeline-data { last-inspection: block-height })
+        )
+        (ok (map-set inspections new-id {
+            pipeline-id: pipeline-id,
+            inspector: tx-sender,
+            inspection-date: block-height,
+            findings: findings,
+            severity: severity,
+            compliance-status: compliance-status,
+            next-inspection-due: next-inspection-due
+        }))
     )
-    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
-    
-    (map-set inspections
-      { inspection-id: inspection-id }
-      {
-        segment-id: segment-id,
-        inspection-type: inspection-type,
-        inspection-date: block-height,
-        inspector: tx-sender,
-        findings: findings,
-        compliance-status: compliance-status,
-        next-inspection-due: (+ block-height u26280),
-        defects-found: defects-found
-      }
-    )
-    
-    (map-set pipeline-segments
-      { segment-id: segment-id }
-      (merge segment { last-inspection: block-height })
-    )
-    
-    (var-set next-inspection-id (+ inspection-id u1))
-    (var-set total-inspections (+ (var-get total-inspections) u1))
-    (ok inspection-id)
-  )
 )
 
-;; Report leak
-(define-public (report-leak
-    (segment-id uint)
-    (severity uint)
-    (location-details (string-ascii 200))
-    (estimated-volume uint))
-  (let
-    (
-      (leak-id (var-get next-leak-id))
-      (segment (unwrap! (map-get? pipeline-segments { segment-id: segment-id }) err-not-found))
-    )
-    (asserts! (<= severity severity-critical) err-invalid-input)
-    
-    (map-set leak-reports
-      { leak-id: leak-id }
-      {
-        segment-id: segment-id,
-        detected-date: block-height,
-        severity: severity,
-        location-details: location-details,
-        estimated-volume: estimated-volume,
-        repair-status: false,
-        repair-date: none,
-        reported-by: tx-sender
-      }
-    )
-    
-    (map-set pipeline-segments
-      { segment-id: segment-id }
-      (merge segment { status: status-maintenance })
-    )
-    
-    (var-set next-leak-id (+ leak-id u1))
-    (var-set total-leaks (+ (var-get total-leaks) u1))
-    (ok leak-id)
-  )
-)
-
-;; Complete leak repair
-(define-public (complete-leak-repair (leak-id uint))
-  (let
-    (
-      (leak (unwrap! (map-get? leak-reports { leak-id: leak-id }) err-not-found))
-      (segment-id (get segment-id leak))
-      (segment (unwrap! (map-get? pipeline-segments { segment-id: segment-id }) err-not-found))
-    )
-    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
-    
-    (map-set leak-reports
-      { leak-id: leak-id }
-      (merge leak {
-        repair-status: true,
-        repair-date: (some block-height)
-      })
-    )
-    
-    (map-set pipeline-segments
-      { segment-id: segment-id }
-      (merge segment { status: status-operational })
-    )
-    (ok true)
-  )
-)
-
-;; Record corrosion survey
-(define-public (record-corrosion-survey
-    (segment-id uint)
-    (cathodic-protection-reading int)
-    (coating-condition uint)
+;; Corrosion Monitoring Functions
+(define-public (log-corrosion
+    (pipeline-id uint)
+    (measurement-type (string-ascii 50))
     (corrosion-rate uint)
-    (remediation-required bool))
-  (let
-    (
-      (corrosion-id (var-get next-corrosion-id))
-      (segment (unwrap! (map-get? pipeline-segments { segment-id: segment-id }) err-not-found))
+    (severity (string-ascii 20))
+    (location-detail (string-ascii 100))
+    (corrective-action (string-ascii 200)))
+    (let
+        (
+            (new-id (+ (var-get corrosion-counter) u1))
+        )
+        (asserts! (is-some (map-get? pipelines pipeline-id)) err-pipeline-not-found)
+        (asserts! (or (is-eq tx-sender contract-owner) 
+                     (is-operator tx-sender) 
+                     (is-inspector tx-sender)) err-not-authorized)
+        (var-set corrosion-counter new-id)
+        (ok (map-set corrosion-records new-id {
+            pipeline-id: pipeline-id,
+            measurement-date: block-height,
+            measurement-type: measurement-type,
+            corrosion-rate: corrosion-rate,
+            severity: severity,
+            location-detail: location-detail,
+            corrective-action: corrective-action
+        }))
     )
-    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
-    (asserts! (<= coating-condition u100) err-invalid-input)
-    
-    (map-set corrosion-data
-      { corrosion-id: corrosion-id }
-      {
-        segment-id: segment-id,
-        survey-date: block-height,
-        cathodic-protection-reading: cathodic-protection-reading,
-        coating-condition: coating-condition,
-        corrosion-rate: corrosion-rate,
-        remediation-required: remediation-required,
-        surveyor: tx-sender
-      }
-    )
-    
-    (var-set next-corrosion-id (+ corrosion-id u1))
-    (ok corrosion-id)
-  )
 )
 
-;; Update compliance status
-(define-public (update-compliance-status
-    (segment-id uint)
-    (phmsa-compliant bool)
-    (violations uint))
-  (let
-    (
-      (compliance (unwrap! (map-get? compliance-records { segment-id: segment-id }) err-not-found))
+;; Leak Detection Functions
+(define-public (report-leak
+    (pipeline-id uint)
+    (severity (string-ascii 20))
+    (location-detail (string-ascii 100))
+    (volume-lost uint)
+    (response-action (string-ascii 200)))
+    (let
+        (
+            (new-id (+ (var-get leak-counter) u1))
+        )
+        (asserts! (is-some (map-get? pipelines pipeline-id)) err-pipeline-not-found)
+        (asserts! (or (is-eq tx-sender contract-owner) (is-operator tx-sender)) err-not-authorized)
+        (var-set leak-counter new-id)
+        (ok (map-set leak-incidents new-id {
+            pipeline-id: pipeline-id,
+            incident-date: block-height,
+            severity: severity,
+            location-detail: location-detail,
+            volume-lost: volume-lost,
+            response-action: response-action,
+            resolved: false,
+            resolution-date: u0
+        }))
     )
-    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
-    
-    (map-set compliance-records
-      { segment-id: segment-id }
-      (merge compliance {
-        phmsa-compliant: phmsa-compliant,
-        last-audit-date: block-height,
-        violations: violations,
-        regulatory-status: (if phmsa-compliant "compliant" "non-compliant")
-      })
-    )
-    (ok true)
-  )
 )
 
-;; Update pipeline status
-(define-public (update-pipeline-status
-    (segment-id uint)
-    (new-status uint))
-  (let
-    (
-      (segment (unwrap! (map-get? pipeline-segments { segment-id: segment-id }) err-not-found))
+(define-public (resolve-leak (leak-id uint))
+    (let
+        (
+            (leak-data (unwrap! (map-get? leak-incidents leak-id) err-leak-not-found))
+        )
+        (asserts! (or (is-eq tx-sender contract-owner) (is-operator tx-sender)) err-not-authorized)
+        (ok (map-set leak-incidents leak-id 
+            (merge leak-data { 
+                resolved: true,
+                resolution-date: block-height
+            })
+        ))
     )
-    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
-    (asserts! (<= new-status status-decommissioned) err-invalid-input)
-    
-    (map-set pipeline-segments
-      { segment-id: segment-id }
-      (merge segment { status: new-status })
-    )
-    (ok true)
-  )
 )
 
-;; Calculate risk score
-(define-public (calculate-risk-score
-    (segment-id uint)
-    (age-factor uint)
-    (corrosion-factor uint)
-    (pressure-factor uint))
-  (let
-    (
-      (segment (unwrap! (map-get? pipeline-segments { segment-id: segment-id }) err-not-found))
-      (risk-score (/ (+ age-factor corrosion-factor pressure-factor) u3))
+;; Inspection Scheduling Functions
+(define-public (schedule-inspection
+    (pipeline-id uint)
+    (inspection-type (string-ascii 50))
+    (scheduled-date uint)
+    (regulatory-requirement (string-ascii 100)))
+    (let
+        (
+            (new-id (+ (var-get schedule-counter) u1))
+        )
+        (asserts! (is-some (map-get? pipelines pipeline-id)) err-pipeline-not-found)
+        (asserts! (or (is-eq tx-sender contract-owner) (is-operator tx-sender)) err-not-authorized)
+        (var-set schedule-counter new-id)
+        (ok (map-set inspection-schedules new-id {
+            pipeline-id: pipeline-id,
+            inspection-type: inspection-type,
+            scheduled-date: scheduled-date,
+            regulatory-requirement: regulatory-requirement,
+            completed: false,
+            completion-date: u0
+        }))
     )
-    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
-    (asserts! (<= risk-score u100) err-invalid-input)
-    
-    (map-set pipeline-segments
-      { segment-id: segment-id }
-      (merge segment { risk-score: risk-score })
+)
+
+(define-public (complete-scheduled-inspection (schedule-id uint))
+    (let
+        (
+            (schedule-data (unwrap! (map-get? inspection-schedules schedule-id) err-inspection-not-found))
+        )
+        (asserts! (or (is-eq tx-sender contract-owner) (is-inspector tx-sender)) err-not-authorized)
+        (ok (map-set inspection-schedules schedule-id 
+            (merge schedule-data { 
+                completed: true,
+                completion-date: block-height
+            })
+        ))
     )
-    (ok risk-score)
-  )
 )
 
 ;; Read-Only Functions
-
-(define-read-only (get-pipeline-info (segment-id uint))
-  (map-get? pipeline-segments { segment-id: segment-id })
+(define-read-only (get-pipeline (pipeline-id uint))
+    (ok (map-get? pipelines pipeline-id))
 )
 
-(define-read-only (get-inspection-record (inspection-id uint))
-  (map-get? inspections { inspection-id: inspection-id })
+(define-read-only (get-inspection (inspection-id uint))
+    (ok (map-get? inspections inspection-id))
 )
 
-(define-read-only (get-leak-report (leak-id uint))
-  (map-get? leak-reports { leak-id: leak-id })
+(define-read-only (get-corrosion-record (record-id uint))
+    (ok (map-get? corrosion-records record-id))
 )
 
-(define-read-only (get-corrosion-data (corrosion-id uint))
-  (map-get? corrosion-data { corrosion-id: corrosion-id })
+(define-read-only (get-leak-incident (leak-id uint))
+    (ok (map-get? leak-incidents leak-id))
 )
 
-(define-read-only (get-compliance-status (segment-id uint))
-  (map-get? compliance-records { segment-id: segment-id })
+(define-read-only (get-inspection-schedule (schedule-id uint))
+    (ok (map-get? inspection-schedules schedule-id))
 )
 
-(define-read-only (get-total-segments)
-  (ok (var-get total-segments))
+(define-read-only (get-pipeline-count)
+    (ok (var-get pipeline-counter))
 )
 
-(define-read-only (get-total-inspections)
-  (ok (var-get total-inspections))
+(define-read-only (get-inspection-count)
+    (ok (var-get inspection-counter))
 )
 
-(define-read-only (get-total-leaks)
-  (ok (var-get total-leaks))
+(define-read-only (get-corrosion-count)
+    (ok (var-get corrosion-counter))
 )
 
-(define-read-only (is-segment-compliant (segment-id uint))
-  (match (map-get? compliance-records { segment-id: segment-id })
-    compliance (ok (get phmsa-compliant compliance))
-    err-not-found
-  )
+(define-read-only (get-leak-count)
+    (ok (var-get leak-counter))
 )
+
+(define-read-only (get-schedule-count)
+    (ok (var-get schedule-counter))
+)
+
+(define-read-only (is-authorized-operator (operator principal))
+    (ok (is-operator operator))
+)
+
+(define-read-only (is-authorized-inspector (inspector principal))
+    (ok (is-inspector inspector))
+)
+
+
+;; title: pipeline-integrity-monitor
+;; version:
+;; summary:
+;; description:
+
+;; traits
+;;
+
+;; token definitions
+;;
+
+;; constants
+;;
+
+;; data vars
+;;
+
+;; data maps
+;;
+
+;; public functions
+;;
+
+;; read only functions
+;;
+
+;; private functions
+;;
 
